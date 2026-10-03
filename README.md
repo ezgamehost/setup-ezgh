@@ -41,24 +41,33 @@ the bot's **OIDC trust** tab) or with `ezgh`:
    Its audience defaults to your domain (`ezghcloud.com`), which is what this action asks GitHub
    for; set `--audiences` and the `audience` input together to use another.
 
-2. **Say which jobs may act as the bot**, with a trust entry matching the token's `sub`:
+2. **Say which jobs may act as the bot**, with a trust entry matching the token's `sub` and
+   claims. Pin the repository by its ID, which survives renames, and match the rest of the
+   subject:
 
    ```sh
+   # The repository's ID:
+   gh api repos/acme/app --jq .id        # 804930151
+
    # Only the main branch of acme/app:
    ezgh iam bots oidc-trust add deployer --provider github \
-     --subject 'repo:acme/app:ref:refs/heads/main'
+     --subject 'repo:*:ref:refs/heads/main' --claim repository_id=804930151
 
    # Only jobs that use the production environment:
    ezgh iam bots oidc-trust add deployer --provider github \
-     --subject 'repo:acme/app:environment:production'
+     --subject 'repo:*:environment:production' --claim repository_id=804930151
    ```
 
-   `*` matches any run of characters (`repo:acme/app:*` is every branch, tag and pull request of
-   the repository). A GitHub subject must name the owner (`repo:acme/…`), unless the entry pins
-   `repository_owner_id` or `repository_id` with `--claim`, which also survive renames. Extra
-   `--claim name=value` conditions, such as
-   `job_workflow_ref=acme/app/.github/workflows/deploy.yml@refs/heads/main`, must equal the token's
-   claims exactly.
+   GitHub writes the `sub` claim in one of two forms, depending on the organization's settings:
+   `repo:acme/app:ref:refs/heads/main`, or with IDs,
+   `repo:acme@1342004/app@804930151:ref:refs/heads/main`. The `repo:*:` subjects above match
+   both. You can also write the exact subject your tokens carry: a refused exchange prints it.
+
+   `*` matches any run of characters (`repo:*:*` with `repository_id` is every branch, tag and
+   pull request of the repository). Without a `repository_id` or `repository_owner_id` claim, a
+   GitHub subject must name the owner (`repo:acme/…`). Extra `--claim name=value` conditions,
+   such as `job_workflow_ref=acme/app/.github/workflows/deploy.yml@refs/heads/main`, must equal
+   the token's claims exactly.
 
 3. **Give the bot only what the job needs**, with policies, as for any bot. The key has exactly the
    bot's access.
@@ -79,7 +88,7 @@ Names can't be looked up without a credential, so `org` and `bot` are IDs or slu
 ## Security
 
 - **Pin the action** to a release tag, or to a commit SHA for the strictest supply-chain policy.
-- **Keep trust entries narrow.** Prefer a branch or an environment over `repo:acme/app:*`: pull
+- **Keep trust entries narrow.** Prefer a branch or an environment over every ref (`repo:*:*`): pull
   requests get tokens too (never from forks, which can't get an OIDC token at all). GitHub
   environments with required reviewers make a good boundary for production bots.
 - `ezgh` is installed from `get.ezghcloud.com`, and its archive is checked against the release's
