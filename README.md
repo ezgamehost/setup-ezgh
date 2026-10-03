@@ -111,3 +111,7 @@ deploy:
 ```
 
 See the [EZGH Cloud docs](https://docs.ezghcloud.com).
+
+## License
+
+[MIT](LICENSE)
