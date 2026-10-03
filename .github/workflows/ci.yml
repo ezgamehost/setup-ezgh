@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: actionlint (and shellcheck on run steps)
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
+      - name: shellcheck the action's bash steps
+        run: |
+          python3 - <<'PY'
+          import re, pathlib
+          text = pathlib.Path("action.yml").read_text()
+          blocks = re.findall(r"shell: bash\n(?:\s+env:\n(?:\s{8}.*\n)+)?\s+run: \|\n((?:\s{8}.*\n|\n)+)", text)
+          assert len(blocks) == 2, len(blocks)
+          for i, block in enumerate(blocks):
+              body = "\n".join(line[8:] for line in block.splitlines())
+              pathlib.Path(f"step{i}.sh").write_text("#!/usr/bin/env bash\n" + body + "\n")
+          PY
+          shellcheck step*.sh
+
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./
+      - run: ezgh version
+        shell: bash
+
+  refuses-half-a-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: half
+        uses: ./
+        continue-on-error: true
+        with:
+          org: org_aaaaaaaaaaaa
+      - if: steps.half.outcome != 'failure'
+        run: |
+          echo "::error::org without bot should fail"
+          exit 1
+
+  refuses-without-id-token:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: no-token
+        uses: ./
+        continue-on-error: true
+        with:
+          org: org_aaaaaaaaaaaa
+          bot: bot_aaaaaaaaaaaa
+      - if: steps.no-token.outcome != 'failure'
+        run: |
+          echo "::error::without id-token: write the exchange should fail"
+          exit 1
+
+  # A real exchange, when the repository has an organization and bot to test with (repository
+  # variables EZGH_TEST_ORG and EZGH_TEST_BOT; the bot trusts this repository's main branch).
+  exchange:
+    if: vars.EZGH_TEST_ORG != '' && vars.EZGH_TEST_BOT != '' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./
+        with:
+          org: ${{ vars.EZGH_TEST_ORG }}
+          bot: ${{ vars.EZGH_TEST_BOT }}
+          expires-in: 15m
+      - run: ezgh auth status

@@ -1,0 +1,104 @@
+# Set up ezgh: installs the EZGH Cloud CLI from get.ezghcloud.com (the installer checks the
+# archive against the release's checksums.txt) and, given org and bot, exchanges this job's GitHub
+# Actions OIDC token for a short-lived API key that acts as the bot (`ezgh auth oidc-exchange`).
+# The key is masked and exported as EZGH_API_KEY, with EZGH_ORG and EZGH_DOMAIN, for the job's
+# later steps. Nothing is stored: the key expires on its own (1 hour by default).
+name: Set up ezgh
+description: Install the EZGH Cloud CLI and act as a bot with this job's OIDC token, with no stored secret.
+author: EZGH Cloud
+branding:
+  icon: terminal
+  color: blue
+
+inputs:
+  org:
+    description: The organization, by ID or slug (org_…). With bot, exchanges the job's OIDC token.
+    required: false
+    default: ""
+  bot:
+    description: The bot to act as, by ID or slug (bot_…). With org, exchanges the job's OIDC token.
+    required: false
+    default: ""
+  version:
+    description: The ezgh version to install (for example 0.7.0); the latest by default.
+    required: false
+    default: ""
+  domain:
+    description: The EZGH Cloud domain.
+    required: false
+    default: ezghcloud.com
+  audience:
+    description: The audience to ask GitHub for; the domain by default. Must be one of the OIDC provider's audiences.
+    required: false
+    default: ""
+  expires-in:
+    description: How long the key is valid, 15m to 12h; 1h by default.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install ezgh
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        EZGH_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        dir="$RUNNER_TEMP/ezgh/bin"
+        mkdir -p "$dir"
+        curl -fsSL --retry 3 https://get.ezghcloud.com/cli.sh | EZGH_INSTALL_DIR="$dir" sh
+        echo "$dir" >>"$GITHUB_PATH"
+
+    - name: Install ezgh (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        EZGH_VERSION: ${{ inputs.version }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $dir = Join-Path $env:RUNNER_TEMP 'ezgh\bin'
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $env:EZGH_INSTALL_DIR = $dir
+        Invoke-RestMethod https://get.ezghcloud.com/cli.ps1 | Invoke-Expression
+        Add-Content -Path $env:GITHUB_PATH -Value $dir
+
+    - name: Act as the bot
+      if: inputs.org != '' || inputs.bot != ''
+      shell: bash
+      env:
+        ORG: ${{ inputs.org }}
+        BOT: ${{ inputs.bot }}
+        EZGH_DOMAIN: ${{ inputs.domain }}
+        AUDIENCE: ${{ inputs.audience }}
+        EXPIRES_IN: ${{ inputs.expires-in }}
+      run: |
+        set -euo pipefail
+        if [ -z "$ORG" ] || [ -z "$BOT" ]; then
+          echo "::error title=setup-ezgh::Give both org and bot to act as a bot."
+          exit 1
+        fi
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+          echo "::error title=setup-ezgh::This job can't get an OIDC token. Add 'permissions: id-token: write' to the job (or workflow). Pull requests from forks never get one."
+          exit 1
+        fi
+        ezgh="$RUNNER_TEMP/ezgh/bin/ezgh"
+        [ -x "$ezgh" ] || ezgh="$ezgh.exe"
+        # An older ezgh answers `auth oidc-exchange --help` with auth's own help, so look for the
+        # command in auth's list.
+        if ! "$ezgh" auth --help 2>/dev/null | grep -q '^  oidc-exchange '; then
+          version=$("$ezgh" version 2>/dev/null | head -n 1 || true)
+          echo "::error title=setup-ezgh::${version:-This ezgh} can't exchange OIDC tokens. Use a newer version (the version input)."
+          exit 1
+        fi
+        set -- auth oidc-exchange --org "$ORG" --bot "$BOT"
+        if [ -n "$AUDIENCE" ]; then set -- "$@" --audience "$AUDIENCE"; fi
+        if [ -n "$EXPIRES_IN" ]; then set -- "$@" --expires-in "$EXPIRES_IN"; fi
+        key=$("$ezgh" "$@")
+        echo "::add-mask::$key"
+        {
+          echo "EZGH_API_KEY=$key"
+          echo "EZGH_ORG=$ORG"
+          echo "EZGH_DOMAIN=$EZGH_DOMAIN"
+        } >>"$GITHUB_ENV"
